@@ -14,69 +14,38 @@
 import logging
 import socket
 import json
-import time
+from piu_lib import create_message, get_my_ip, receive_message
 
 # Constants
-LOGFILENAME = 'piu-server.log'
-HOSTSFILENAME = 'hosts2.json'
-HOSTNAME = 'PC2'
-PORT = 12345
-HOST = '127.0.0.1'
-FORMAT = 'utf-8'
-HEADERLEN = 10
-
-
-# Function to wrap the header and message
-def create_header(send_msg):
-
-    logging.debug(f'create_header - send_msg ({send_msg})')
-
-    # Create a string with the size of the message, with 10 digits, that will be the header
-    header = f'{len(send_msg.encode(FORMAT)):{HEADERLEN}}'
-
-    logging.debug(f'create_header - header ({header})')
-
-    # Join the header and the message
-    full_msg = header + send_msg
-
-    logging.debug(f'create_header - full_msg ({full_msg})')
-
-    return full_msg
-
-# Get my public IP
-
-
-def get_my_ip():
-
-    dyndns = urlopen('http://checkip.dyndns.com/').read().decode()
-    my_ip = re.compile(
-        r'Address: (\d+\.\d+\.\d+\.\d+)').search(dyndns).group(1)
-
-    logging.debug(f'get_my_ip - my_ip ({my_ip})')
-
-    # Return my_ip as a string
-    return my_ip
+JSON_FILE = 'piu-server.json'
 
 
 def main():
+    global config
+
+    # Get parameters from JSON file
+    with open(JSON_FILE, "r") as jsonfile:
+        config = json.load(jsonfile)
 
     # Logging config and first log
-    logging.basicConfig(filename=LOGFILENAME, level=logging.DEBUG,
-                        format='%(asctime)s %(levelname)-8s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    logging.basicConfig(filename=config['LOGFILENAME'], level=logging.DEBUG,
+                        format='%(asctime)s %(levelname)-8s [%(funcName)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     logging.info('---------- PIU START -----------')
 
-    # Log our own host and IP address
-    logging.info(f'Host ({HOST}) and port ({PORT})')
-
-    # Start counting time
-    start_time = time.time()
-    print('Time: ', int(start_time))
+    # Log the config
+    for conf_key in config:
+        logging.info(f'Config -> {conf_key}  -> {config[conf_key]}')
 
     # Create a socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_soc:
 
-        # Bind the socket to a port
-        server_soc.bind((HOST, PORT))
+        try:
+            # Bind the socket to a port
+            server_soc.bind(('127.0.0.1', config['PORT']))
+
+        except socket.error as err:
+            logging.debug(f"Error binding to port {config['PORT']}: {err}.")
+            exit()
 
         # Listen for connections
         server_soc.listen()
@@ -89,31 +58,39 @@ def main():
             client_con, client_addr = server_soc.accept()
             logging.info(f'Got connection from ({client_addr}).')
 
-            # Receive header from client
-            msg_len = int(client_con.recv(HEADERLEN).decode(FORMAT))
-
-            # Receive message from client
-            msg_received = client_con.recv(msg_len).decode(FORMAT)
+            msg_received = receive_message(client_con, config)
 
             print('Client message: ', msg_received)
 
-            # Write message to the file
-            with open(HOSTSFILENAME, "w") as jsonfile:
-                jsonfile.write(msg_received)
+            try:
+                data_received = json.loads(msg_received)
+            except Exception as err:
+                logging.info(f'Message has JSON error: ({err}).')
 
-            # Prepare the response
+                # Close connection and continue
+                client_con.close()
+                continue
 
-            # Create IP object
-            my_ip_object = {'name': HOSTNAME, 'ip': socket.gethostname()}
+            # Check if the client exist in the config
+            if config['SERVER']['hostname'] == data_received['name']:
+                print(
+                    f"Host exist: {config['SERVER']['hostname']} - {data_received['name']}")
+                print(
+                    f"Check: {config['SERVER']['ip']} - {data_received['ip']}")
+                if config['SERVER']['ip'] != data_received['ip']:
+                    config['SERVER']['ip'] = data_received['ip']
+                    print(config)
 
-            # Convert to a JSON
-            my_ip_json = json.dumps(my_ip_object)
+                    # Write updated config to file
+                    with open(JSON_FILE, "w") as jsonfile:
+                        jsonfile.write(json.dumps(
+                            config, indent=4, sort_keys=True))
 
-            # Prepare the message
-            msg = create_header(my_ip_json)
+            # Prepare the response message
+            msg = create_message('OK', config["HEADERLEN"], config['FORMAT'])
 
             # Send message to client
-            client_con.send(msg.encode(FORMAT))
+            client_con.send(msg)
 
             # Close connection
             client_con.close()

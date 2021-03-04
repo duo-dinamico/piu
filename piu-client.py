@@ -13,84 +13,64 @@
 
 import logging
 import socket
-from urllib.request import urlopen
-import re
 import json
+from piu_lib import create_message, get_my_ip, receive_message
 
 # Constants
-LOGFILENAME = 'piu-client.log'
-HOSTSFILENAME = 'hosts1.json'
-HOSTNAME = 'PC1'
-PORT = 12345
-HOST = '127.0.0.1'
-FORMAT = 'utf-8'
-HEADERLEN = 10
-
-
-# Function to wrap the header and message
-def create_header(send_msg):
-
-    logging.debug(f'create_header - send_msg ({send_msg})')
-
-    # Create a string with the size of the message, with 10 digits, that will be the header
-    header = f'{len(send_msg.encode(FORMAT)):{HEADERLEN}}'
-
-    logging.debug(f'create_header - header ({header})')
-
-    # Join the header and the message
-    full_msg = header + send_msg
-
-    logging.debug(f'create_header - full_msg ({full_msg})')
-
-    return full_msg
-
-
-# Get my public IP
-def get_my_ip():
-
-    dyndns = urlopen('http://checkip.dyndns.com/').read().decode()
-    my_ip = re.compile(
-        r'Address: (\d+\.\d+\.\d+\.\d+)').search(dyndns).group(1)
-
-    logging.debug(f'get_my_ip - my_ip ({my_ip})')
-
-    # Return my_ip as a string
-    return my_ip
+JSON_FILE = 'piu-client.json'
 
 
 def main():
+    global config
+
+    # Get parameters from JSON file
+    try:
+        with open(JSON_FILE, "r") as jsonfile:
+            config = json.load(jsonfile)
+    except Exception as err:
+        logging.info(f'Error opening JSON file {JSON_FILE} with error: {err}.')
+        exit()
 
     # Logging config and first log
-    logging.basicConfig(filename=LOGFILENAME, level=logging.DEBUG,
-                        format='%(asctime)s %(levelname)-8s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    logging.basicConfig(filename=config['LOGFILENAME'], level=logging.DEBUG,
+                        format='%(asctime)s %(levelname)-8s [%(funcName)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     logging.info('---------- PIU START -----------')
+
+    # Log the config
+    for x in config:
+        logging.info(f'Config -> {x}  -> {config[x]}')
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_soc:
 
         # Connect the server
-        client_soc.connect((HOST, PORT))
+        try:
+            client_soc.connect((config['SERVER']['ip'], config['PORT']))
+        except Exception as err:
+            logging.info(
+                f"Error connecting server {config['SERVER']['ip']}, port {config['PORT']} with error: {err}.")
+            exit()
 
         # Create IP object
-        my_ip_object = {'name': HOSTNAME, 'ip': get_my_ip()}
+        my_ip_object = {'name': config['HOSTNAME'], 'ip': get_my_ip()}
 
         # Convert to a JSON
         my_ip_json = json.dumps(my_ip_object)
 
         # Prepare the message
-        msg = create_header(my_ip_json)
+        msg = create_message(my_ip_json, config['HEADERLEN'], config['FORMAT'])
 
         # Send the message
-        client_soc.send(msg.encode(FORMAT))
-
-        # Receive header from client
-        msg_len = int(client_soc.recv(HEADERLEN).decode(FORMAT))
+        client_soc.send(msg)
 
         # Receive message from client
-        msg = client_soc.recv(msg_len).decode(FORMAT)
+        msg = receive_message(client_soc, config)
+
         print(msg)
 
-        with open(HOSTSFILENAME, "w") as jsonfile:
-            jsonfile.write(msg)
+        if msg == "OK":
+            logging.info('OK received.')
+        else:
+            logging.info(f'Error, received: {msg}')
 
     # Last log
     logging.info('^^^^^^^^^^^^ PIU STOP ^^^^^^^^^^^^')
